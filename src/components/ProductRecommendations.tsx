@@ -4,16 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Heart, ShoppingBag, Camera, Share2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
-
-interface Product {
-  id: string;
-  name: string;
-  category: string;
-  price: number;
-  image: string;
-  description: string;
-  celebrity: string;
-}
+import { products, Product } from "@/data/products";
 
 interface ProductRecommendationsProps {
   celebrity: string;
@@ -21,66 +12,12 @@ interface ProductRecommendationsProps {
   onTryOn: (product: Product) => void;
 }
 
-const mockProducts: Product[] = [
-  {
-    id: "1",
-    name: "Diamond Elegance Necklace",
-    category: "Necklace",
-    price: 45000,
-    image: "https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?w=400&h=400&fit=crop",
-    description: "Exquisite diamond necklace with platinum setting",
-    celebrity: "Deepika Padukone",
-  },
-  {
-    id: "2",
-    name: "Royal Ruby Earrings",
-    category: "Earrings",
-    price: 32000,
-    image: "https://images.unsplash.com/photo-1535632066927-ab7c9ab60908?w=400&h=400&fit=crop",
-    description: "Stunning ruby earrings with gold accents",
-    celebrity: "Priyanka Chopra",
-  },
-  {
-    id: "3",
-    name: "Pearl Grace Bracelet",
-    category: "Bracelet",
-    price: 18500,
-    image: "https://images.unsplash.com/photo-1611591437281-460bfbe1220a?w=400&h=400&fit=crop",
-    description: "Delicate pearl bracelet with rose gold chain",
-    celebrity: "Alia Bhatt",
-  },
-  {
-    id: "4",
-    name: "Emerald Radiance Ring",
-    category: "Ring",
-    price: 55000,
-    image: "https://images.unsplash.com/photo-1605100804763-247f67b3557e?w=400&h=400&fit=crop",
-    description: "Captivating emerald ring with diamond halo",
-    celebrity: "Kareena Kapoor",
-  },
-  {
-    id: "5",
-    name: "Sapphire Elegance Set",
-    category: "Jewelry Set",
-    price: 89000,
-    image: "https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?w=400&h=400&fit=crop",
-    description: "Complete sapphire jewelry set with matching pieces",
-    celebrity: "Anushka Sharma",
-  },
-  {
-    id: "6",
-    name: "Gold Heritage Anklet",
-    category: "Anklet",
-    price: 24000,
-    image: "https://images.unsplash.com/photo-1617038260897-41a1f14a8ca0?w=400&h=400&fit=crop",
-    description: "Traditional gold anklet with modern touch",
-    celebrity: "Sonam Kapoor",
-  },
-];
-
 export const ProductRecommendations = ({ celebrity, occasion, onTryOn }: ProductRecommendationsProps) => {
   const [wishlist, setWishlist] = useState<Set<string>>(new Set());
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  
+  // Use real products from database
+  const displayProducts = products;
 
   const toggleWishlist = (productId: string) => {
     setWishlist(prev => {
@@ -126,7 +63,7 @@ export const ProductRecommendations = ({ celebrity, occasion, onTryOn }: Product
 
         {/* Products Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {mockProducts.map((product) => (
+          {displayProducts.map((product) => (
             <Card 
               key={product.id} 
               className="group overflow-hidden transition-all hover:shadow-luxury"

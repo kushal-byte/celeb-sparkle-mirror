@@ -3,16 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Camera, RotateCcw, Download, X, Sparkles } from "lucide-react";
 import { toast } from "sonner";
-
-interface Product {
-  id: string;
-  name: string;
-  category: string;
-  price: number;
-  image: string;
-  description: string;
-  celebrity: string;
-}
+import { Product } from "@/data/products";
 
 interface VirtualTryOnProps {
   product: Product;
@@ -211,8 +202,8 @@ export const VirtualTryOn = ({ product, onClose }: VirtualTryOnProps) => {
                     <span className="font-medium">{product.category}</span>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Inspired by</span>
-                    <span className="font-medium">{product.celebrity}</span>
+                    <span className="text-muted-foreground">Collection</span>
+                    <span className="font-medium">{product.collection}</span>
                   </div>
                 </div>
 

@@ -4,18 +4,9 @@ import { OccasionSelector } from "@/components/OccasionSelector";
 import { CelebrityGallery } from "@/components/CelebrityGallery";
 import { ProductRecommendations } from "@/components/ProductRecommendations";
 import { VirtualTryOn } from "@/components/VirtualTryOn";
+import { Product } from "@/data/products";
 
 type Step = "hero" | "occasion" | "celebrity" | "products" | "tryOn";
-
-interface Product {
-  id: string;
-  name: string;
-  category: string;
-  price: number;
-  image: string;
-  description: string;
-  celebrity: string;
-}
 
 const Index = () => {
   const [currentStep, setCurrentStep] = useState<Step>("hero");
