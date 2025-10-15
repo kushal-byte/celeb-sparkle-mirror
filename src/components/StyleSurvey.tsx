@@ -6,6 +6,8 @@ import { Sparkles } from "lucide-react";
 
 interface StyleSurveyProps {
   onComplete: (occasion: string, styles: string[], budget: string) => void;
+  onPrev?: () => void;
+  onNext?: () => void;
 }
 
 const occasions = [
@@ -31,7 +33,7 @@ const budgetRanges = [
   { id: "over-3000", label: "Over $3,000" },
 ];
 
-export const StyleSurvey = ({ onComplete }: StyleSurveyProps) => {
+export const StyleSurvey = ({ onComplete, onPrev, onNext }: StyleSurveyProps) => {
   const [selectedOccasion, setSelectedOccasion] = useState<string>("");
   const [selectedStyles, setSelectedStyles] = useState<string[]>([]);
   const [selectedBudget, setSelectedBudget] = useState<string>("");
@@ -152,6 +154,16 @@ export const StyleSurvey = ({ onComplete }: StyleSurveyProps) => {
             Continue to Celebrity Matching
           </Button>
         </div>
+        {onPrev && (
+          <div className="absolute left-6 bottom-6">
+            <Button variant="ghost" onClick={onPrev}>Prev</Button>
+          </div>
+        )}
+        {onNext && (
+          <div className="absolute right-6 bottom-6">
+            <Button variant="ghost" onClick={onNext}>Next</Button>
+          </div>
+        )}
       </div>
     </div>
   );

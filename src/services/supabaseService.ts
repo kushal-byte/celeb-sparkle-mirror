@@ -90,11 +90,13 @@ export const supabaseService = {
     return data;
   },
 
-  async removeFromWishlist(wishlistId: string) {
+  // Remove wishlist entry by session + product to avoid needing the wishlist row id in the client
+  async removeFromWishlistBySessionAndProduct(sessionId: string, productId: string) {
     const { error } = await supabase
       .from('wishlists')
       .delete()
-      .eq('id', wishlistId);
+      .eq('session_id', sessionId)
+      .eq('product_id', productId);
 
     if (error) throw error;
   },

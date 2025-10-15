@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { X, ShoppingBag, Camera } from "lucide-react";
-import { Product } from "@/data/products";
+import { Product } from "@/data/loadProducts";
 
 interface WishlistProps {
   items: Product[];

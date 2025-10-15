@@ -1,59 +1,90 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Search, Sparkles } from "lucide-react";
+import deepika from "./100.jpg";
+import priyanka from "./101.jpg";
+import alia from "./102.jpg";
+import kareena from "./103.jpg";
+import anushka from "./104.jpg";
+import sonam from "./105.jpg";
 
 interface CelebrityGalleryProps {
   occasion: string;
   onSelect: (celebrity: string) => void;
+  suggestions?: { name: string; style?: string; image?: string }[];
+  onPrev?: () => void;
+  onNext?: () => void;
 }
 
-const celebrities = [
+const defaultCelebrities = [
   {
     name: "Deepika Padukone",
     style: "Elegant & Timeless",
-    image: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&h=500&fit=crop",
+    image: deepika,
   },
   {
     name: "Priyanka Chopra",
     style: "Bold & Modern",
-    image: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=400&h=500&fit=crop",
+    image: priyanka,
   },
   {
     name: "Alia Bhatt",
     style: "Delicate & Graceful",
-    image: "https://images.unsplash.com/photo-1508214751196-bcfd4ca60f91?w=400&h=500&fit=crop",
+    image: alia,
   },
   {
     name: "Kareena Kapoor",
     style: "Classic & Sophisticated",
-    image: "https://images.unsplash.com/photo-1488426862026-3ee34a7d66df?w=400&h=500&fit=crop",
+    image: kareena,
   },
   {
     name: "Anushka Sharma",
     style: "Minimalist & Chic",
-    image: "https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e?w=400&h=500&fit=crop",
+    image: anushka,
   },
   {
     name: "Sonam Kapoor",
     style: "Fashion Forward",
-    image: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&h=500&fit=crop",
+    image: sonam,
   },
 ];
 
-export const CelebrityGallery = ({ occasion, onSelect }: CelebrityGalleryProps) => {
+export const CelebrityGallery = ({ occasion, onSelect, suggestions, onPrev, onNext }: CelebrityGalleryProps) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCelebrity, setSelectedCelebrity] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const itemsPerPage = 6; // show up to 6 items per page (3 columns x 2 rows on md)
+
+  const celebrities = (suggestions && suggestions.length > 0 ? suggestions : defaultCelebrities);
 
   const filteredCelebrities = celebrities.filter(celebrity =>
     celebrity.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const totalPages = Math.max(1, Math.ceil(filteredCelebrities.length / itemsPerPage));
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const paginatedCelebrities = filteredCelebrities.slice(startIndex, startIndex + itemsPerPage);
+
   const handleSelect = (name: string) => {
     setSelectedCelebrity(name);
     setTimeout(() => onSelect(name), 500);
   };
+
+  // Reset to first page when search changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm]);
+
+  // If filtered results shrink, ensure currentPage is within bounds
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+    // include currentPage to satisfy the hook lint rule; effect only updates when pages change
+  }, [totalPages, currentPage]);
 
   return (
     <div className="min-h-screen flex flex-col px-8 py-16">
@@ -82,7 +113,7 @@ export const CelebrityGallery = ({ occasion, onSelect }: CelebrityGalleryProps) 
 
         {/* Celebrity Grid */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
-          {filteredCelebrities.map((celebrity) => (
+          {paginatedCelebrities.map((celebrity) => (
             <Card
               key={celebrity.name}
               className={`group relative overflow-hidden cursor-pointer transition-all hover:scale-105 hover:shadow-luxury ${
@@ -130,6 +161,41 @@ export const CelebrityGallery = ({ occasion, onSelect }: CelebrityGalleryProps) 
             <p className="text-lg text-muted-foreground">
               No celebrities found. Try a different search term.
             </p>
+          </div>
+        )}
+
+        {/* Pagination Controls */}
+        {filteredCelebrities.length > itemsPerPage && (
+          <div className="flex items-center justify-center gap-3 mt-6">
+            <Button
+              variant="outline"
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+            >
+              Previous
+            </Button>
+
+            <div className="text-sm text-muted-foreground">
+              Page {currentPage} of {totalPages}
+            </div>
+
+            <Button
+              variant="outline"
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+            >
+              Next
+            </Button>
+          </div>
+        )}
+        {onPrev && (
+          <div className="absolute left-6 bottom-6">
+            <Button variant="ghost" onClick={onPrev}>Prev</Button>
+          </div>
+        )}
+        {onNext && (
+          <div className="absolute right-6 bottom-6">
+            <Button variant="ghost" onClick={onNext}>Next</Button>
           </div>
         )}
       </div>

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Heart, ShoppingBag, Camera, Share2, Sparkles, Filter } from "lucide-react";
 import { toast } from "sonner";
-import { products, Product } from "@/data/products";
+import { useProducts, Product } from "@/data/loadProducts";
 
 interface ProductRecommendationsProps {
   celebrity: string;
@@ -15,6 +15,8 @@ interface ProductRecommendationsProps {
   wishlist: Set<string>;
   onWishlistToggle: (productId: string) => void;
   onViewWishlist: () => void;
+  onPrev?: () => void;
+  onNext?: () => void;
 }
 
 export const ProductRecommendations = ({ 
@@ -23,16 +25,19 @@ export const ProductRecommendations = ({
   onTryOn, 
   wishlist, 
   onWishlistToggle,
-  onViewWishlist 
+  onViewWishlist,
+  onPrev,
+  onNext,
 }: ProductRecommendationsProps) => {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const { products, loading, error, categories } = useProducts();
   const [priceRange, setPriceRange] = useState<string>("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   // Filter products
   const filteredProducts = useMemo(() => {
-    let filtered = products;
+    let filtered = products ?? [];
 
     // Search filter
     if (searchQuery) {
@@ -59,9 +64,7 @@ export const ProductRecommendations = ({
     }
 
     return filtered;
-  }, [searchQuery, categoryFilter, priceRange]);
-
-  const categories = Array.from(new Set(products.map(p => p.category)));
+  }, [products, searchQuery, categoryFilter, priceRange]);
 
 
   const handleShare = (product: Product) => {
@@ -72,6 +75,22 @@ export const ProductRecommendations = ({
     setSelectedProduct(product);
     onTryOn(product);
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen px-8 py-16 flex items-center justify-center">
+        <p className="text-muted-foreground">Loading Evol Jewels recommendations…</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen px-8 py-16 flex items-center justify-center">
+        <p className="text-red-500">{error}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen px-8 py-16">
@@ -110,12 +129,12 @@ export const ProductRecommendations = ({
               <SelectTrigger>
                 <SelectValue placeholder="Category" />
               </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Categories</SelectItem>
-                {categories.map(cat => (
-                  <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                ))}
-              </SelectContent>
+            <SelectContent>
+              <SelectItem value="all">All Categories</SelectItem>
+              {categories.map(cat => (
+                <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+              ))}
+            </SelectContent>
             </Select>
 
             <Select value={priceRange} onValueChange={setPriceRange}>
@@ -142,7 +161,7 @@ export const ProductRecommendations = ({
         </Card>
 
         <p className="text-center text-muted-foreground">
-          Showing {filteredProducts.length} of {products.length} products
+          Showing {filteredProducts.length} of {(products ?? []).length} products
         </p>
 
         {/* Products Grid */}
@@ -213,6 +232,11 @@ export const ProductRecommendations = ({
                   <Button 
                     variant="outline"
                     size="icon"
+                    onClick={() => {
+                      // Lightweight cart add via custom event so Index can handle
+                      window.dispatchEvent(new CustomEvent('add-to-cart', { detail: { productId: product.id } }));
+                      toast.success('Added to cart');
+                    }}
                   >
                     <ShoppingBag className="w-5 h-5" />
                   </Button>
@@ -229,6 +253,16 @@ export const ProductRecommendations = ({
             View Wishlist ({wishlist.size})
           </Button>
         </div>
+        {onPrev && (
+          <div className="absolute left-6 bottom-6">
+            <Button variant="ghost" onClick={onPrev}>Prev</Button>
+          </div>
+        )}
+        {onNext && (
+          <div className="absolute right-6 bottom-6">
+            <Button variant="ghost" onClick={onNext}>Next</Button>
+          </div>
+        )}
       </div>
     </div>
   );

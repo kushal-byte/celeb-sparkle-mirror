@@ -3,9 +3,11 @@ import { Sparkles, Camera, Heart } from "lucide-react";
 
 interface HeroProps {
   onGetStarted: () => void;
+  onPrev?: () => void;
+  onNext?: () => void;
 }
 
-export const Hero = ({ onGetStarted }: HeroProps) => {
+export const Hero = ({ onGetStarted, onPrev, onNext }: HeroProps) => {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-8 relative overflow-hidden">
       {/* Background gradient effects */}
@@ -67,6 +69,16 @@ export const Hero = ({ onGetStarted }: HeroProps) => {
           Touch anywhere to start your personalized jewelry journey
         </p>
       </div>
+      {onPrev && (
+        <div className="absolute left-6 bottom-6">
+          <Button variant="ghost" onClick={onPrev}>Prev</Button>
+        </div>
+      )}
+      {onNext && (
+        <div className="absolute right-6 bottom-6">
+          <Button variant="ghost" onClick={onNext}>Next</Button>
+        </div>
+      )}
     </div>
   );
 };
