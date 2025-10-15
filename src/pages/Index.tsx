@@ -6,15 +6,18 @@ import { ProductRecommendations } from "@/components/ProductRecommendations";
 import { VirtualTryOn } from "@/components/VirtualTryOn";
 import { Wishlist } from "@/components/Wishlist";
 import { Product, products } from "@/data/products";
-import { supabase } from "@/integrations/supabase/client";
+import { supabaseService } from "@/services/supabaseService";
+import { useSessionId } from "@/hooks/useSessionId";
 import { toast } from "sonner";
 
 type Step = "hero" | "survey" | "celebrity" | "products" | "tryOn" | "wishlist";
 
 const Index = () => {
+  const sessionId = useSessionId();
   const [currentStep, setCurrentStep] = useState<Step>("hero");
   const [selectedOccasion, setSelectedOccasion] = useState<string>("");
   const [stylePreferences, setStylePreferences] = useState<string[]>([]);
+  const [budgetRange, setBudgetRange] = useState<string>("");
   const [selectedCelebrity, setSelectedCelebrity] = useState<string>("");
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [wishlist, setWishlist] = useState<Set<string>>(new Set());
@@ -37,19 +40,19 @@ const Index = () => {
     setCurrentStep("survey");
   };
 
-  const handleSurveyComplete = async (occasion: string, styles: string[]) => {
+  const handleSurveyComplete = async (occasion: string, styles: string[], budget: string) => {
     setSelectedOccasion(occasion);
     setStylePreferences(styles);
+    setBudgetRange(budget);
     setIsMatchingCelebrity(true);
 
     try {
-      const { data, error } = await supabase.functions.invoke('match-celebrity', {
-        body: { occasion, stylePreferences: styles }
-      });
+      if (sessionId) {
+        await supabaseService.saveSurvey(sessionId, occasion, styles, budget);
+      }
 
-      if (error) throw error;
+      const data = await supabaseService.callMatchCelebrity(occasion, styles, budget);
 
-      // Show AI-matched celebrities
       toast.success(`AI matched ${data.celebrities.length} celebrities for you!`);
       setIsMatchingCelebrity(false);
       setCurrentStep("celebrity");
@@ -76,7 +79,7 @@ const Index = () => {
     setSelectedProduct(null);
   };
 
-  const toggleWishlist = (productId: string) => {
+  const toggleWishlist = async (productId: string) => {
     setWishlist(prev => {
       const newSet = new Set(prev);
       if (newSet.has(productId)) {
@@ -85,6 +88,12 @@ const Index = () => {
       } else {
         newSet.add(productId);
         toast.success("Added to wishlist");
+
+        if (sessionId) {
+          supabaseService.addToWishlist(sessionId, productId).catch(err => {
+            console.error('Error saving to wishlist:', err);
+          });
+        }
       }
       return newSet;
     });

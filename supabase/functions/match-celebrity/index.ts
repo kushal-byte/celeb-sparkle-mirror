@@ -1,28 +1,33 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 200,
+      headers: corsHeaders,
+    });
   }
 
   try {
-    const { occasion, stylePreferences } = await req.json();
-    const OPENROUTER_API_KEY = Deno.env.get('OPENROUTER_API_KEY');
+    const { occasion, stylePreferences, budgetRange } = await req.json();
+    const OPENROUTER_API_KEY = Deno.env.get('VITE_OPENROUTER_API_KEY');
 
     if (!OPENROUTER_API_KEY) {
       throw new Error('OPENROUTER_API_KEY is not configured');
     }
 
-    const prompt = `Based on the following preferences, suggest 3 Bollywood celebrities whose jewelry style matches best:
+    const prompt = `Based on the following customer preferences, suggest 3-4 celebrities whose jewelry style would match:
 - Occasion: ${occasion}
-- Style Preferences: ${stylePreferences.join(', ')}
+- Style Preferences: ${JSON.stringify(stylePreferences)}
+- Budget Range: ${budgetRange}
 
-Return ONLY a JSON array with celebrity names, no other text. Format: ["Celebrity 1", "Celebrity 2", "Celebrity 3"]`;
+Return ONLY a JSON array with celebrity names who are known for their jewelry style. Format: ["Celebrity 1", "Celebrity 2", "Celebrity 3"]`;
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -52,14 +57,12 @@ Return ONLY a JSON array with celebrity names, no other text. Format: ["Celebrit
 
     const data = await response.json();
     const aiResponse = data.choices[0].message.content;
-    
-    // Parse the AI response to extract celebrity names
+
     let celebrities: string[];
     try {
       celebrities = JSON.parse(aiResponse);
     } catch {
-      // Fallback if AI doesn't return valid JSON
-      celebrities = ['Deepika Padukone', 'Priyanka Chopra', 'Alia Bhatt'];
+      celebrities = ['Zendaya', 'Rihanna', 'Blake Lively', 'Beyonce'];
     }
 
     return new Response(
@@ -71,7 +74,7 @@ Return ONLY a JSON array with celebrity names, no other text. Format: ["Celebrit
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
       JSON.stringify({ error: errorMessage }),
-      { 
+      {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       }

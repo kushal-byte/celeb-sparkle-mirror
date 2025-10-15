@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Sparkles } from "lucide-react";
 
 interface StyleSurveyProps {
-  onComplete: (occasion: string, styles: string[]) => void;
+  onComplete: (occasion: string, styles: string[], budget: string) => void;
 }
 
 const occasions = [
@@ -24,9 +24,17 @@ const styleOptions = [
   { id: "elegant", label: "Elegant" },
 ];
 
+const budgetRanges = [
+  { id: "under-500", label: "Under $500" },
+  { id: "500-1500", label: "$500 - $1,500" },
+  { id: "1500-3000", label: "$1,500 - $3,000" },
+  { id: "over-3000", label: "Over $3,000" },
+];
+
 export const StyleSurvey = ({ onComplete }: StyleSurveyProps) => {
   const [selectedOccasion, setSelectedOccasion] = useState<string>("");
   const [selectedStyles, setSelectedStyles] = useState<string[]>([]);
+  const [selectedBudget, setSelectedBudget] = useState<string>("");
 
   const toggleStyle = (styleId: string) => {
     setSelectedStyles(prev =>
@@ -37,8 +45,8 @@ export const StyleSurvey = ({ onComplete }: StyleSurveyProps) => {
   };
 
   const handleContinue = () => {
-    if (selectedOccasion && selectedStyles.length > 0) {
-      onComplete(selectedOccasion, selectedStyles);
+    if (selectedOccasion && selectedStyles.length > 0 && selectedBudget) {
+      onComplete(selectedOccasion, selectedStyles, selectedBudget);
     }
   };
 
@@ -109,6 +117,28 @@ export const StyleSurvey = ({ onComplete }: StyleSurveyProps) => {
               ))}
             </div>
           </div>
+
+          {/* Budget Range */}
+          <div>
+            <h3 className="text-2xl font-bold mb-4">Your Budget Range</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {budgetRanges.map((budget) => (
+                <Card
+                  key={budget.id}
+                  className={`cursor-pointer transition-all hover:shadow-luxury ${
+                    selectedBudget === budget.id
+                      ? "border-primary bg-primary/5 shadow-glow"
+                      : ""
+                  }`}
+                  onClick={() => setSelectedBudget(budget.id)}
+                >
+                  <div className="p-6 text-center">
+                    <h4 className="font-semibold">{budget.label}</h4>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className="flex justify-center">
@@ -116,7 +146,7 @@ export const StyleSurvey = ({ onComplete }: StyleSurveyProps) => {
             variant="luxury"
             size="lg"
             onClick={handleContinue}
-            disabled={!selectedOccasion || selectedStyles.length === 0}
+            disabled={!selectedOccasion || selectedStyles.length === 0 || !selectedBudget}
             className="px-12"
           >
             Continue to Celebrity Matching
