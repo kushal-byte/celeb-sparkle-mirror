@@ -1,14 +1,22 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { FilesetResolver, FaceLandmarker, HandLandmarker } from "@mediapipe/tasks-vision";
-// Use Vite to emit wasm helper script and derive base path at runtime
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore - Vite adds ?url support at build time
+// @ts-ignore
 import wasmHelperUrl from "@mediapipe/tasks-vision/wasm/vision_wasm_internal.js?url";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Camera, RotateCcw, Download, X, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import type { Product } from "@/data/loadProducts";
+
+// MediaPipe Face Landmark Indices
+// Using FACE OVAL landmarks which are closer to ears
+const FACE_LANDMARKS = {
+  LEFT_EAR_AREA: 454,        // Left face oval edge (very close to ear)
+  RIGHT_EAR_AREA: 234,       // Right face oval edge (very close to ear)
+  CHIN: 152,                 // Chin/jaw bottom
+  NOSE_TIP: 1,              // Nose tip
+  FOREHEAD_CENTER: 10,      // Forehead
+} as const;
 
 interface VirtualTryOnProps {
   product: Product;
@@ -25,55 +33,99 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
   const frameRequestedRef = useRef<number | null>(null);
   const [faceLandmarker, setFaceLandmarker] = useState<FaceLandmarker | null>(null);
   const [handLandmarker, setHandLandmarker] = useState<HandLandmarker | null>(null);
-  // Use refs so the animation loop always sees the latest landmarker instances
   const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
   const handLandmarkerRef = useRef<HandLandmarker | null>(null);
-  const [earPositions, setEarPositions] = useState<{ left?: { x: number; y: number }; right?: { x: number; y: number }; neck?: { x: number; y: number } }>({});
+  
+  const [earPositions, setEarPositions] = useState<{ 
+    left?: { x: number; y: number }; 
+    right?: { x: number; y: number }; 
+    neck?: { x: number; y: number };
+  }>({});
   const [wristPosition, setWristPosition] = useState<{ x: number; y: number } | null>(null);
   const [processedImage, setProcessedImage] = useState<string | null>(null);
+  const [faceDetected, setFaceDetected] = useState(false);
+  
   const lastDetectTimeRef = useRef<number>(0);
   const lastPositionsRef = useRef<typeof earPositions>({});
-  const minDetectIntervalMs = 66; // ~15 FPS landmarking for smoother UI + lower CPU
-  const smoothRef = useRef<{ left?: { x: number; y: number }; right?: { x: number; y: number }; neck?: { x: number; y: number }; wrist?: { x: number; y: number } }>({});
-  // smoothing state + ref so debug panel can tune it live
-  const [smoothingAlpha, setSmoothingAlpha] = useState<number>(0.6);
+  const minDetectIntervalMs = 50; // 20 FPS for smoother detection
+  
+  const smoothRef = useRef<{ 
+    left?: { x: number; y: number }; 
+    right?: { x: number; y: number }; 
+    neck?: { x: number; y: number }; 
+    wrist?: { x: number; y: number } 
+  }>({});
+  
+  const [smoothingAlpha, setSmoothingAlpha] = useState<number>(0.7);
   const smoothingAlphaRef = useRef<number>(smoothingAlpha);
   useEffect(() => { smoothingAlphaRef.current = smoothingAlpha; }, [smoothingAlpha]);
-  // Offsets and scale for fine-tuning overlay placement
-  const [offsets, setOffsets] = useState<{ x: number; y: number; scale: number }>({ x: 0, y: 0, scale: 1 });
+  
+  // REDUCED ear offset - bringing earrings much closer
+  const [earOffsetMultiplier, setEarOffsetMultiplier] = useState<number>(0.012);
+  const earOffsetMultiplierRef = useRef<number>(earOffsetMultiplier);
+  useEffect(() => { earOffsetMultiplierRef.current = earOffsetMultiplier; }, [earOffsetMultiplier]);
+  
+  const [offsets, setOffsets] = useState<{ x: number; y: number; scale: number }>({ 
+    x: 0, 
+    y: 0, // Default slight downward offset
+    scale: 1 
+  });
   const offsetsRef = useRef(offsets);
   useEffect(() => { offsetsRef.current = offsets; }, [offsets]);
-  // Cache for processed transparent images by original src
+  
   const transparentCache = useRef<Record<string,string>>({});
+  
+  // Debug mode
+  const debugMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugTryOn') === '1';
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  type Point = { x: number; y: number };
+  const fpsRef = useRef<{ lastTime: number; frameCount: number; fps: number }>({ 
+    lastTime: performance.now(), 
+    frameCount: 0, 
+    fps: 0 
+  });
+  const lastRawRef = useRef<{ left?: Point; right?: Point; neck?: Point } | null>(null);
+  const lastFpsUpdateRef = useRef<number>(0);
+  type DebugStats = { 
+    fps: number; 
+    resolution?: string; 
+    raw?: { left?: Point; right?: Point; neck?: Point }; 
+    smooth?: { left?: Point; right?: Point; neck?: Point };
+    faceDetected: boolean;
+  };
+  const [debugStats, setDebugStats] = useState<DebugStats>({ fps: 0, faceDetected: false });
+  const [showMarkers, setShowMarkers] = useState<boolean>(false);
 
-  // Utility: map normalized landmark (0..1) to displayed pixel inside the video element
+  // Map normalized landmark (0..1) to displayed pixel with proper mirroring
   const mapNormalizedToDisplayed = (nx: number, ny: number, videoEl: HTMLVideoElement) => {
     const rect = videoEl.getBoundingClientRect();
-    // video.videoWidth/videoHeight is the intrinsic size. With object-fit: contain, the video may be letterboxed.
     const vw = videoEl.videoWidth || rect.width;
     const vh = videoEl.videoHeight || rect.height;
 
-    const scale = Math.min(rect.width / vw, rect.height / vh);
+    // Determine how the video is fit into the element (cover vs contain)
+    const computedFit = (videoEl.style && videoEl.style.objectFit) || getComputedStyle(videoEl).objectFit || 'contain';
+    const scale = computedFit === 'cover'
+      ? Math.max(rect.width / vw, rect.height / vh)
+      : Math.min(rect.width / vw, rect.height / vh);
     const displayW = vw * scale;
     const displayH = vh * scale;
+    // offset can be negative for cover (cropping)
     const offsetX = (rect.width - displayW) / 2;
     const offsetY = (rect.height - displayH) / 2;
 
-    // normalized coordinates relative to intrinsic frame
+    // Convert normalized coordinates to display coordinates
     const x = nx * displayW + offsetX;
     const y = ny * displayH + offsetY;
-    // mirror
+    
+    // Mirror X-axis for selfie view
     const mirroredX = rect.width - x;
-    return { x: mirroredX, y };
+    // Clamp to container to avoid overflow when using cover/crop
+    const cx = Math.max(0, Math.min(rect.width, mirroredX));
+    const cy = Math.max(0, Math.min(rect.height, y));
+    return { x: cx, y: cy };
   };
 
-  const averagePoints = (pts: {x:number;y:number}[]) => {
-    if (!pts.length) return undefined;
-    const acc = pts.reduce((a,b) => ({ x: a.x + b.x, y: a.y + b.y }), { x:0, y:0 });
-    return { x: acc.x / pts.length, y: acc.y / pts.length };
-  };
-
-  // Canvas-based white->transparent processor. Returns a data URL (cached). Best-effort: may fail cross-origin.
+  // Canvas-based white->transparent processor
   const makeImageTransparent = async (src: string) => {
     if (transparentCache.current[src]) return transparentCache.current[src];
     try {
@@ -84,18 +136,23 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
         i.onerror = reject;
         i.src = src;
       });
-      const w = img.naturalWidth; const h = img.naturalHeight;
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
       const c = document.createElement('canvas');
-      c.width = w; c.height = h;
+      c.width = w;
+      c.height = h;
       const ctx = c.getContext('2d');
       if (!ctx) throw new Error('no-ctx');
       ctx.drawImage(img, 0, 0);
-      const data = ctx.getImageData(0,0,w,h);
-      for (let i=0;i<data.data.length;i+=4) {
-        const r = data.data[i], g = data.data[i+1], b = data.data[i+2];
-        // if pixel is near-white, make transparent
+      const data = ctx.getImageData(0, 0, w, h);
+      
+      for (let i = 0; i < data.data.length; i += 4) {
+        const r = data.data[i];
+        const g = data.data[i + 1];
+        const b = data.data[i + 2];
+        // Make near-white pixels transparent
         if (r > 240 && g > 240 && b > 240) {
-          data.data[i+3] = 0;
+          data.data[i + 3] = 0;
         }
       }
       ctx.putImageData(data, 0, 0);
@@ -103,12 +160,11 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
       transparentCache.current[src] = out;
       return out;
     } catch (e) {
-      // CORS or other failure: return original
       return src;
     }
   };
 
-  // Preprocess product image when product changes
+  // Preprocess product image
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -122,17 +178,15 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
     return () => { mounted = false; };
   }, [product.image]);
 
-  // Debug overlay
-  const debugMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugTryOn') === '1';
-  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  type Point = { x: number; y: number };
-  const fpsRef = useRef<{ lastTime: number; frameCount: number; fps: number }>({ lastTime: performance.now(), frameCount: 0, fps: 0 });
-  const lastRawRef = useRef<{ left?: Point; right?: Point; neck?: Point } | null>(null);
-  const lastFpsUpdateRef = useRef<number>(0);
-  type DebugStats = { fps: number; resolution?: string; raw?: { left?: Point; right?: Point; neck?: Point }; smooth?: { left?: Point; right?: Point; neck?: Point } };
-  const [debugStats, setDebugStats] = useState<DebugStats>({ fps: 0 });
-
-  const drawDebugOverlay = useCallback((canvas: HTMLCanvasElement, videoEl: HTMLVideoElement, raw: { left?: Point; right?: Point; neck?: Point } | null, smooth: { left?: Point; right?: Point; neck?: Point } | null, fps: number) => {
+  // Debug overlay drawing
+  const drawDebugOverlay = useCallback((
+    canvas: HTMLCanvasElement, 
+    videoEl: HTMLVideoElement, 
+    raw: { left?: Point; right?: Point; neck?: Point } | null, 
+    smooth: { left?: Point; right?: Point; neck?: Point } | null, 
+    fps: number,
+    detected: boolean
+  ) => {
     const rect = videoEl.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.round(rect.width * dpr);
@@ -142,107 +196,138 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, rect.width, rect.height);
 
-    // Draw raw points (cyan)
     const drawPt = (p: {x:number;y:number}, color: string, r = 4) => {
-      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI*2); ctx.fillStyle = color; ctx.fill();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
       ctx.closePath();
     };
 
+    // Draw raw points (cyan)
     if (raw) {
-      if (raw.left) drawPt(raw.left, 'rgba(0,200,255,0.9)');
-      if (raw.right) drawPt(raw.right, 'rgba(0,200,255,0.9)');
+      if (raw.left) drawPt(raw.left, 'rgba(0,200,255,0.9)', 8);
+      if (raw.right) drawPt(raw.right, 'rgba(0,200,255,0.9)', 8);
       if (raw.neck) drawPt(raw.neck, 'rgba(0,200,255,0.9)');
     }
+    
     // Draw smoothed points (yellow)
     if (smooth) {
-      if (smooth.left) drawPt(smooth.left, 'rgba(255,200,0,0.95)', 5);
-      if (smooth.right) drawPt(smooth.right, 'rgba(255,200,0,0.95)', 5);
-      if (smooth.neck) drawPt(smooth.neck, 'rgba(255,200,0,0.95)', 5);
+      if (smooth.left) drawPt(smooth.left, 'rgba(255,200,0,0.95)', 10);
+      if (smooth.right) drawPt(smooth.right, 'rgba(255,200,0,0.95)', 10);
+      if (smooth.neck) drawPt(smooth.neck, 'rgba(255,200,0,0.95)', 6);
     }
 
-    // Draw FPS and resolution
-    ctx.fillStyle = 'rgba(255,255,255,0.95)';
-    ctx.font = '12px ui-sans-serif, system-ui';
-    ctx.fillText(`FPS: ${Math.round(fps)}`, 8, 16);
-    ctx.fillText(`Res: ${videoEl.videoWidth}x${videoEl.videoHeight}`, 8, 32);
+    // Draw FPS and status
+    ctx.fillStyle = detected ? 'rgba(0,255,100,0.95)' : 'rgba(255,100,100,0.95)';
+    ctx.font = 'bold 14px ui-sans-serif, system-ui';
+    ctx.fillText(`FPS: ${Math.round(fps)}`, 8, 20);
+    ctx.fillText(`Res: ${videoEl.videoWidth}x${videoEl.videoHeight}`, 8, 40);
+    ctx.fillText(detected ? '✓ Face Detected' : '✗ No Face', 8, 60);
   }, []);
 
   const startCamera = useCallback(async () => {
     try {
+      // Request higher quality video for better detection
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "user" },
+        video: { 
+          facingMode: "user",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 }
+        },
         audio: false 
       });
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-          videoRef.current.onloadedmetadata = () => {
+        videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play();
           setIsStreaming(true);
-          // Kick off a very light animation loop so the browser optimizes compositing of overlay
+          
+          // Main detection loop
           const tick = () => {
-            // Always read from refs inside the animation loop so we observe changes
             const fl = faceLandmarkerRef.current;
             const hl = handLandmarkerRef.current;
+            
             if (!videoRef.current || !fl) {
               const id = requestAnimationFrame(tick);
               frameRequestedRef.current = id;
               return;
             }
+            
             try {
               const now = performance.now();
-              // Throttle landmarking to reduce CPU/GPU load
+              
+              // Throttle detection
               if (now - lastDetectTimeRef.current >= minDetectIntervalMs) {
                 lastDetectTimeRef.current = now;
+                
+                // Detect face landmarks
                 const result = fl.detectForVideo(videoRef.current, now);
                 const landmarks = result.faceLandmarks?.[0];
-                if (landmarks && videoRef.current) {
-                  // Robust anchor calculation: compute face bounding box from all landmarks
-                  // and use left/right extremes as ear anchors; chin as the lowest y landmark
-                  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-                  for (let i = 0; i < landmarks.length; i++) {
-                    const p = landmarks[i];
-                    if (p.x < minX) minX = p.x;
-                    if (p.x > maxX) maxX = p.x;
-                    if (p.y < minY) minY = p.y;
-                    if (p.y > maxY) maxY = p.y;
-                  }
+                
+                if (landmarks && landmarks.length >= 478 && videoRef.current) {
+                  setFaceDetected(true);
+                  
+                  // Use face oval edge landmarks (closest to ears)
+                  // These are at the very edge of the face contour
+                  const leftEdgeLandmark = landmarks[FACE_LANDMARKS.LEFT_EAR_AREA];
+                  const rightEdgeLandmark = landmarks[FACE_LANDMARKS.RIGHT_EAR_AREA];
+                  const chinLandmark = landmarks[FACE_LANDMARKS.CHIN];
+                  
+                  // Calculate face width for proportional calculation
+                  const faceWidthNorm = Math.abs(rightEdgeLandmark.x - leftEdgeLandmark.x);
+                  
+                  // Tunable offsets: X proportion and Y shift (negative moves upward)
+                  const earOffsetX = faceWidthNorm * earOffsetMultiplierRef.current;
+                  const earOffsetY = faceWidthNorm * -0.052; // negative brings earrings slightly up toward ear
 
-                  // pick vertical midpoint for ear anchors slightly above center
-                  const midY = (minY + maxY) / 2;
-                  const leftNorm = { x: minX, y: midY };
-                  const rightNorm = { x: maxX, y: midY };
-                  // chin as the maxY point
-                  const chinNorm = { x: (minX + maxX) / 2, y: maxY };
-
-                  const left = mapNormalizedToDisplayed(leftNorm.x, leftNorm.y, videoRef.current!);
-                  const right = mapNormalizedToDisplayed(rightNorm.x, rightNorm.y, videoRef.current!);
-                  const chin = mapNormalizedToDisplayed(chinNorm.x, chinNorm.y, videoRef.current!);
-
-                  // Only update React state if movement is significant (avoid reflows)
-                  const prev = lastPositionsRef.current;
-                  const movedEnough = (a?: {x:number;y:number}, b?: {x:number;y:number}) => {
-                    if (!a || !b) return true;
-                    const dx = a.x - b.x; const dy = a.y - b.y;
-                    return (dx*dx + dy*dy) > 9; // >3px movement
+                  // Calculate ear positions - closer to face by default
+                  const leftEarNorm = {
+                    x: leftEdgeLandmark.x - earOffsetX,
+                    y: leftEdgeLandmark.y + earOffsetY
                   };
-
+                  const rightEarNorm = {
+                    x: rightEdgeLandmark.x + earOffsetX,
+                    y: rightEdgeLandmark.y + earOffsetY
+                  };
+                  
+                  // Map to display coordinates
+                  const left = mapNormalizedToDisplayed(leftEarNorm.x, leftEarNorm.y, videoRef.current);
+                  const right = mapNormalizedToDisplayed(rightEarNorm.x, rightEarNorm.y, videoRef.current);
+                  const chin = mapNormalizedToDisplayed(chinLandmark.x, chinLandmark.y, videoRef.current);
+                  
                   const next = { left, right, neck: chin };
                   const rawPts = next;
+                  
                   // EMA smoothing
                   const s = smoothRef.current;
                   const ema = (oldV: {x:number;y:number}|undefined, newV: {x:number;y:number}) => {
                     const a = smoothingAlphaRef.current;
                     if (!oldV) return newV;
-                    return { x: oldV.x*(1-a) + newV.x*a, y: oldV.y*(1-a) + newV.y*a };
+                    return { 
+                      x: oldV.x * (1 - a) + newV.x * a, 
+                      y: oldV.y * (1 - a) + newV.y * a 
+                    };
                   };
+                  
                   const smoothNext = {
                     left: ema(s.left, next.left),
                     right: ema(s.right, next.right),
                     neck: ema(s.neck, next.neck),
-                  } as typeof s;
+                  };
                   smoothRef.current = smoothNext;
-
+                  
+                  // Update positions
+                  const movedEnough = (a?: {x:number;y:number}, b?: {x:number;y:number}) => {
+                    if (!a || !b) return true;
+                    const dx = a.x - b.x;
+                    const dy = a.y - b.y;
+                    return (dx * dx + dy * dy) > 4; // >2px movement
+                  };
+                  
+                  const prev = lastPositionsRef.current;
                   if (
                     movedEnough(prev.left, smoothNext.left) ||
                     movedEnough(prev.right, smoothNext.right) ||
@@ -251,28 +336,40 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
                     lastPositionsRef.current = smoothNext;
                     setEarPositions(smoothNext);
                   }
-                  // update raw cache for debug
+                  
                   lastRawRef.current = rawPts;
+                } else {
+                  setFaceDetected(false);
                 }
+                
+                // Hand detection for bracelets
                 if (hl && videoRef.current) {
                   const hands = hl.detectForVideo(videoRef.current, now);
                   const hand = hands.handednesses?.[0] && hands.landmarks?.[0];
                   if (hand) {
                     const rect = videoRef.current.getBoundingClientRect();
-                    // WRIST index 0 -> map to displayed, mirror X
-                    const nx = hand[0].x; const ny = hand[0].y;
-                    const wrist = { x: rect.width - nx * rect.width, y: ny * rect.height };
-                    // Smooth wrist
+                    const nx = hand[0].x;
+                    const ny = hand[0].y;
+                    const wrist = { 
+                      x: rect.width - nx * rect.width, 
+                      y: ny * rect.height 
+                    };
+                    
+                    const emaPt = (oldV: {x:number;y:number}|undefined, newV: {x:number;y:number}) => {
+                      const a = smoothingAlphaRef.current;
+                      return (!oldV ? newV : { 
+                        x: oldV.x * (1 - a) + newV.x * a, 
+                        y: oldV.y * (1 - a) + newV.y * a 
+                      });
+                    };
+                    
                     const s = smoothRef.current;
-                      const emaPt = (oldV: {x:number;y:number}|undefined, newV: {x:number;y:number}) => {
-                        const a = smoothingAlphaRef.current;
-                        return (!oldV ? newV : { x: oldV.x*(1-a) + newV.x*a, y: oldV.y*(1-a) + newV.y*a });
-                      };
                     smoothRef.current = { ...s, wrist: emaPt(s.wrist, wrist) };
                     setWristPosition(smoothRef.current.wrist!);
                   }
                 }
               }
+              
               // FPS counting
               const fr = fpsRef.current;
               fr.frameCount += 1;
@@ -281,22 +378,38 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
                 fr.fps = (fr.frameCount * 1000) / elapsed;
                 fr.lastTime = now;
                 fr.frameCount = 0;
-                // throttle debug UI updates
+                
                 if (debugMode && overlayCanvasRef.current && videoRef.current) {
-                  drawDebugOverlay(overlayCanvasRef.current, videoRef.current, lastRawRef.current, smoothRef.current, fr.fps);
+                  drawDebugOverlay(
+                    overlayCanvasRef.current, 
+                    videoRef.current, 
+                    lastRawRef.current, 
+                    smoothRef.current, 
+                    fr.fps,
+                    faceDetected
+                  );
+                  
                   const nowTick = performance.now();
                   if (nowTick - lastFpsUpdateRef.current > 250) {
                     lastFpsUpdateRef.current = nowTick;
-                    setDebugStats({ fps: fr.fps, resolution: `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`, raw: lastRawRef.current ?? undefined, smooth: smoothRef.current ?? undefined });
+                    setDebugStats({ 
+                      fps: fr.fps, 
+                      resolution: `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`, 
+                      raw: lastRawRef.current ?? undefined, 
+                      smooth: smoothRef.current ?? undefined,
+                      faceDetected
+                    });
                   }
                 }
               }
-            } catch {
-              // ignore per-frame errors
+            } catch (err) {
+              console.error("Detection error:", err);
             }
+            
             const id = requestAnimationFrame(tick);
             frameRequestedRef.current = id;
           };
+          
           const id = requestAnimationFrame(tick);
           frameRequestedRef.current = id;
         };
@@ -305,41 +418,54 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
       console.error("Error accessing camera:", error);
       toast.error("Could not access camera. Please check permissions.");
     }
-  }, [drawDebugOverlay, debugMode]);
+  }, [drawDebugOverlay, debugMode, faceDetected]);
 
   useEffect(() => {
     let isMounted = true;
-    // Capture video ref at effect start for a stable reference in cleanup
     const capturedVideoRef = videoRef.current;
+    
     const init = async () => {
       await startCamera();
+      
       try {
         const u = new URL(wasmHelperUrl, window.location.href);
-        // Strip filename to get directory base
         const wasmBase = u.toString().replace(/vision_wasm_internal\.js(?:\?.*)?$/i, "");
         const filesetResolver = await FilesetResolver.forVisionTasks(wasmBase);
+        
+        // Initialize Face Landmarker with optimized settings
         const landmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
           baseOptions: {
             modelAssetPath:
               "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+            delegate: "GPU",
           },
           outputFaceBlendshapes: false,
+          outputFacialTransformationMatrixes: false,
           runningMode: "VIDEO",
           numFaces: 1,
+          minFaceDetectionConfidence: 0.5,
+          minFacePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
         });
+        
         let hand: HandLandmarker | null = null;
         try {
           hand = await HandLandmarker.createFromOptions(filesetResolver, {
             baseOptions: {
               modelAssetPath:
                 "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+              delegate: "GPU",
             },
             runningMode: "VIDEO",
             numHands: 1,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
           });
         } catch (e) {
           console.warn("HandLandmarker init failed", e);
         }
+        
         if (isMounted) {
           setFaceLandmarker(landmarker);
           faceLandmarkerRef.current = landmarker;
@@ -349,12 +475,14 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
           }
         }
       } catch (e) {
-        console.warn("FaceLandmarker init failed", e);
+        console.error("FaceLandmarker init failed", e);
+        toast.error("Failed to initialize face detection");
       }
     };
+    
     init();
+    
     return () => {
-      // Use the captured video ref to avoid lint about ref changing before cleanup
       const localVideo = capturedVideoRef;
       const localFrame = frameRequestedRef.current;
       if (localVideo && localVideo.srcObject) {
@@ -369,24 +497,20 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
     };
   }, [startCamera]);
 
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-    }
-    if (frameRequestedRef.current != null) {
-      cancelAnimationFrame(frameRequestedRef.current);
-      frameRequestedRef.current = null;
-    }
-  };
-
   const capturePhoto = () => {
     if (videoRef.current && canvasRef.current) {
       const context = canvasRef.current.getContext('2d');
       if (context) {
         canvasRef.current.width = videoRef.current.videoWidth;
         canvasRef.current.height = videoRef.current.videoHeight;
-        context.drawImage(videoRef.current, 0, 0);
+        context.scale(-1, 1);
+        context.drawImage(
+          videoRef.current, 
+          -canvasRef.current.width, 
+          0, 
+          canvasRef.current.width, 
+          canvasRef.current.height
+        );
         
         const imageData = canvasRef.current.toDataURL('image/png');
         setCapturedImage(imageData);
@@ -443,7 +567,7 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
           <div className="grid md:grid-cols-2 gap-8">
             {/* Camera View */}
             <div className="space-y-4">
-              <div className="relative aspect-[3/4] bg-muted rounded-lg overflow-hidden">
+              <div className="relative aspect-[3/4] rounded-lg overflow-hidden bg-transparent">
                 {!capturedImage ? (
                   <>
                     <video
@@ -451,110 +575,136 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
                       autoPlay
                       playsInline
                       muted
-                      className="w-full h-full object-contain mirror"
-                      style={{ transform: 'scaleX(-1)', objectFit: 'contain' }}
+                      className="w-full h-full mirror"
+                      style={{ transform: 'scaleX(-1)', objectFit: 'cover' }}
                     />
                     
-                    {/* AR Overlay - Simulated jewelry overlay */}
+                    {/* Face detection status indicator */}
                     {isStreaming && (
+                      <div className="absolute top-4 left-4 z-10">
+                        <div className={`px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2 ${
+                          faceDetected 
+                            ? 'bg-green-500/90 text-white' 
+                            : 'bg-amber-500/90 text-white'
+                        }`}>
+                          <div className={`w-2 h-2 rounded-full ${
+                            faceDetected ? 'bg-white' : 'bg-white animate-pulse'
+                          }`} />
+                          {faceDetected ? 'Face Detected' : 'Looking for face...'}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* AR Overlay */}
+                    {isStreaming && faceDetected && (
                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                        {/* Dynamic AR overlays based on category */}
+                        {/* Debug markers toggle */}
+                        <div className="absolute top-4 right-4 z-20">
+                          <button className="px-2 py-1 text-xs bg-white/80 rounded" onClick={() => setShowMarkers(s => !s)}>
+                            {showMarkers ? 'Hide markers' : 'Show markers'}
+                          </button>
+                        </div>
+                        {/* Earrings */}
                         {product.category.toLowerCase().includes("ear") && earPositions.left && earPositions.right && (
                           <>
                             {(() => {
-                              // Scale earrings by ear distance
                               const dx = (earPositions.right!.x - earPositions.left!.x);
                               const dy = (earPositions.right!.y - earPositions.left!.y);
-                              const earDist = Math.sqrt(dx*dx + dy*dy);
-                              const size = Math.max(36, Math.min(96, earDist * 0.45));
+                              const earDist = Math.sqrt(dx * dx + dy * dy);
+                              const size = Math.max(50, Math.min(110, earDist * 0.35));
                               const half = size / 2;
                               const styleCommon = {
                                 width: `${size}px`,
                                 height: `${size}px`,
-                                filter: 'drop-shadow(0 0 12px rgba(212, 175, 55, 0.35))',
-                                willChange: 'transform' as const,
+                                filter: 'drop-shadow(0 0 8px rgba(212, 175, 55, 0.35))',
+                                willChange: 'transform',
+                                transition: 'transform 0.05s ease-out',
                               };
                               return (
                                 <>
                                   <img
-                                    src={processedImage ?? transparentCache.current[product.image] ?? product.image}
+                                    src={processedImage ?? product.image}
                                     alt={product.name}
-                                    className="absolute object-contain opacity-90 drop-shadow-2xl"
+                                    className="absolute object-contain opacity-95 drop-shadow-2xl"
                                     style={{
                                       ...styleCommon,
-                                      transform: `translate3d(${earPositions.left!.x - half + offsetsRef.current.x}px, ${earPositions.left!.y - (size*0.15) + offsetsRef.current.y}px, 0) scale(${offsetsRef.current.scale})`,
+                                      transform: `translate3d(${earPositions.left!.x - half + offsetsRef.current.x}px, ${earPositions.left!.y - half + offsetsRef.current.y}px, 0) scale(${offsetsRef.current.scale})`,
                                     }}
                                   />
                                   <img
-                                    src={processedImage ?? transparentCache.current[product.image] ?? product.image}
+                                    src={processedImage ?? product.image}
                                     alt={product.name}
-                                    className="absolute object-contain opacity-90 drop-shadow-2xl"
+                                    className="absolute object-contain opacity-95 drop-shadow-2xl"
                                     style={{
                                       ...styleCommon,
-                                      transform: `translate3d(${earPositions.right!.x - half + offsetsRef.current.x}px, ${earPositions.right!.y - (size*0.15) + offsetsRef.current.y}px, 0) scale(${offsetsRef.current.scale})`,
+                                      transform: `translate3d(${earPositions.right!.x - half + offsetsRef.current.x}px, ${earPositions.right!.y - half + offsetsRef.current.y}px, 0) scale(${offsetsRef.current.scale})`,
                                     }}
                                   />
                                 </>
                               );
                             })()}
-                            {debugMode && (
-                              <canvas
-                                ref={el => { overlayCanvasRef.current = el }}
-                                className="absolute inset-0 w-full h-full pointer-events-none"
-                                style={{ width: '100%', height: '100%' }}
-                              />
-                            )}
                           </>
                         )}
+                        
+                        {/* Necklace */}
                         {product.category.toLowerCase().includes("neck") && earPositions.neck && earPositions.left && earPositions.right && (
                           (() => {
-                            // Necklace width based on face width; position slightly below chin
                             const dx = (earPositions.right!.x - earPositions.left!.x);
                             const dy = (earPositions.right!.y - earPositions.left!.y);
-                            const faceWidth = Math.sqrt(dx*dx + dy*dy);
-                            const width = Math.max(160, Math.min(320, faceWidth * 1.6));
+                            const faceWidth = Math.sqrt(dx * dx + dy * dy);
+                            const width = Math.max(160, Math.min(340, faceWidth * 1.7));
                             const height = width * 0.5;
                             const x = earPositions.neck!.x - width / 2;
-                            const y = earPositions.neck!.y + Math.min(40, height * 0.2);
+                            const y = earPositions.neck!.y + Math.min(45, height * 0.25);
                             return (
                               <img
-                                src={product.image}
+                                src={processedImage ?? product.image}
                                 alt={product.name}
-                                className="absolute object-contain opacity-90 drop-shadow-2xl"
+                                className="absolute object-contain opacity-95 drop-shadow-2xl"
                                 style={{
                                   width: `${width}px`,
                                   height: `${height}px`,
-                                  transform: `translate3d(${x}px, ${y}px, 0)`,
-                                  filter: 'drop-shadow(0 0 12px rgba(212, 175, 55, 0.35))',
+                                  transform: `translate3d(${x}px, ${y}px, 0) scale(${offsetsRef.current.scale})`,
+                                  filter: 'drop-shadow(0 0 12px rgba(212, 175, 55, 0.4))',
                                   willChange: 'transform',
+                                  transition: 'transform 0.05s ease-out',
                                 }}
                               />
                             );
                           })()
                         )}
+                        
+                        {/* Bracelet */}
                         {product.category.toLowerCase().includes("bracelet") && wristPosition && (
                           <img
-                            src={product.image}
+                            src={processedImage ?? product.image}
                             alt={product.name}
-                            className="absolute object-contain opacity-90 drop-shadow-2xl"
+                            className="absolute object-contain opacity-95 drop-shadow-2xl"
                             style={{
-                              width: "160px",
-                              height: "160px",
-                              transform: `translate3d(${wristPosition.x - 80}px, ${wristPosition.y - 40}px, 0)`,
-                              filter: 'drop-shadow(0 0 12px rgba(212, 175, 55, 0.35))',
+                              width: "180px",
+                              height: "180px",
+                              transform: `translate3d(${wristPosition.x - 90}px, ${wristPosition.y - 50}px, 0) scale(${offsetsRef.current.scale})`,
+                              filter: 'drop-shadow(0 0 12px rgba(212, 175, 55, 0.4))',
                               willChange: 'transform',
+                              transition: 'transform 0.05s ease-out',
                             }}
                           />
                         )}
-                        {!product.category.toLowerCase().includes("ear") && !product.category.toLowerCase().includes("neck") && !product.category.toLowerCase().includes("bracelet") && (
-                          <div className="relative">
-                            <img
-                              src={product.image}
-                              alt={product.name}
-                              className="w-64 h-64 object-contain opacity-70 drop-shadow-2xl will-change-transform"
-                              style={{ filter: 'drop-shadow(0 0 20px rgba(212, 175, 55, 0.5))' }}
-                            />
-                          </div>
+                        
+                        {/* Debug overlay */}
+                        {debugMode && (
+                          <canvas
+                            ref={overlayCanvasRef}
+                            className="absolute inset-0 w-full h-full pointer-events-none"
+                            style={{ width: '100%', height: '100%' }}
+                          />
+                        )}
+                        {showMarkers && (
+                          <>
+                            {earPositions.left && <div style={{ position: 'absolute', left: earPositions.left.x - 6, top: earPositions.left.y - 6, width: 12, height: 12, borderRadius: 6, background: 'cyan', pointerEvents: 'none' }} />}
+                            {earPositions.right && <div style={{ position: 'absolute', left: earPositions.right.x - 6, top: earPositions.right.y - 6, width: 12, height: 12, borderRadius: 6, background: 'cyan', pointerEvents: 'none' }} />}
+                            {earPositions.neck && <div style={{ position: 'absolute', left: earPositions.neck.x - 6, top: earPositions.neck.y - 6, width: 12, height: 12, borderRadius: 6, background: 'yellow', pointerEvents: 'none' }} />}
+                          </>
                         )}
                       </div>
                     )}
@@ -584,7 +734,7 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
                       size="lg" 
                       className="flex-1"
                       onClick={capturePhoto}
-                      disabled={!isStreaming}
+                      disabled={!isStreaming || !faceDetected}
                     >
                       <Camera className="w-5 h-5" />
                       Capture Photo
@@ -621,25 +771,95 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
 
               {/* Debug Panel */}
               {debugMode && (
-                <div className="fixed right-6 top-24 z-60 w-72 p-4 bg-white/95 text-black rounded-lg shadow-lg">
-                  <h4 className="font-semibold mb-2">AR Debug</h4>
-                  <div className="text-xs text-muted-foreground mb-2">FPS: {Math.round(debugStats.fps)}</div>
-                  <div className="text-xs text-muted-foreground mb-2">Res: {debugStats.resolution}</div>
-                  <div className="mb-2">
-                    <label className="text-xs">Smoothing: {smoothingAlpha.toFixed(2)}</label>
-                    <input type="range" min="0.05" max="0.95" step="0.01" value={smoothingAlpha} onChange={(e) => setSmoothingAlpha(Number(e.target.value))} className="w-full" />
-                  </div>
-                  <div className="mb-2">
-                    <label className="text-xs">Offset X: {offsets.x}px</label>
-                    <input type="range" min="-80" max="80" step="1" value={offsets.x} onChange={(e) => setOffsets(o => ({ ...o, x: Number(e.target.value) }))} className="w-full" />
-                  </div>
-                  <div className="mb-2">
-                    <label className="text-xs">Offset Y: {offsets.y}px</label>
-                    <input type="range" min="-80" max="80" step="1" value={offsets.y} onChange={(e) => setOffsets(o => ({ ...o, y: Number(e.target.value) }))} className="w-full" />
-                  </div>
-                  <div className="mb-1">
-                    <label className="text-xs">Scale: {offsets.scale.toFixed(2)}</label>
-                    <input type="range" min="0.5" max="1.8" step="0.01" value={offsets.scale} onChange={(e) => setOffsets(o => ({ ...o, scale: Number(e.target.value) }))} className="w-full" />
+                <div className="fixed right-6 top-24 z-[60] w-80 p-4 bg-white/95 text-black rounded-lg shadow-lg border-2 border-gray-200">
+                  <h4 className="font-bold mb-3 text-lg">AR Debug Panel</h4>
+                  <div className="space-y-3">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">FPS:</span>
+                      <span className="font-mono font-semibold">{Math.round(debugStats.fps)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Resolution:</span>
+                      <span className="font-mono text-xs">{debugStats.resolution}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Face Status:</span>
+                      <span className={`font-semibold ${faceDetected ? 'text-green-600' : 'text-red-600'}`}>
+                        {faceDetected ? '✓ Detected' : '✗ Not Found'}
+                      </span>
+                    </div>
+                    <hr className="my-2" />
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-gray-700">
+                        Ear Offset: {earOffsetMultiplier.toFixed(3)}
+                      </label>
+                      <input 
+                        type="range" 
+                        min="0.00" 
+                        max="0.15" 
+                        step="0.005" 
+                        value={earOffsetMultiplier} 
+                        onChange={(e) => setEarOffsetMultiplier(Number(e.target.value))} 
+                        className="w-full" 
+                      />
+                      <p className="text-xs text-gray-500">↓ Lower = closer to face</p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-gray-700">
+                        Smoothing: {smoothingAlpha.toFixed(2)}
+                      </label>
+                      <input 
+                        type="range" 
+                        min="0.1" 
+                        max="0.95" 
+                        step="0.05" 
+                        value={smoothingAlpha} 
+                        onChange={(e) => setSmoothingAlpha(Number(e.target.value))} 
+                        className="w-full" 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-gray-700">
+                        Offset X: {offsets.x}px
+                      </label>
+                      <input 
+                        type="range" 
+                        min="-100" 
+                        max="100" 
+                        step="1" 
+                        value={offsets.x} 
+                        onChange={(e) => setOffsets(o => ({ ...o, x: Number(e.target.value) }))} 
+                        className="w-full" 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-gray-700">
+                        Offset Y: {offsets.y}px
+                      </label>
+                      <input 
+                        type="range" 
+                        min="-100" 
+                        max="100" 
+                        step="1" 
+                        value={offsets.y} 
+                        onChange={(e) => setOffsets(o => ({ ...o, y: Number(e.target.value) }))} 
+                        className="w-full" 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-gray-700">
+                        Scale: {offsets.scale.toFixed(2)}
+                      </label>
+                      <input 
+                        type="range" 
+                        min="0.5" 
+                        max="2.0" 
+                        step="0.05" 
+                        value={offsets.scale} 
+                        onChange={(e) => setOffsets(o => ({ ...o, scale: Number(e.target.value) }))} 
+                        className="w-full" 
+                      />
+                    </div>
                   </div>
                 </div>
               )}
@@ -693,10 +913,12 @@ export const VirtualTryOn = ({ product, onClose, onPrev, onNext }: VirtualTryOnP
               Virtual Try-On Tips
             </h5>
             <ul className="text-sm text-muted-foreground space-y-1">
-              <li>• Ensure good lighting for best results</li>
-              <li>• Position yourself centered in the frame</li>
-              <li>• The jewelry overlay simulates how the piece will look</li>
-              <li>• Capture and share your look with friends</li>
+              <li>• Face the camera directly for accurate detection</li>
+              <li>• Ensure good lighting - avoid backlighting</li>
+              <li>• Keep your face centered in the frame</li>
+              <li>• Wait for "Face Detected" status before capturing</li>
+              <li>• For bracelets, show your wrist to the camera</li>
+              <li>• Use debug mode (?debugTryOn=1) to fine-tune ear position</li>
             </ul>
           </div>
         </div>
