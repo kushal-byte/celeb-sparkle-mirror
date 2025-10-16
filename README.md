@@ -1,5 +1,5 @@
 # Evol Jewels — Local development (frontend + hosted Supabase)
-
+https://celeb-sparkle-mirror.vercel.app/
 This README shows exactly how to run the application using a hosted Supabase project, run the database migration (copy/paste SQL), deploy the `match-celebrity` function, and start the frontend for interactive AR testing. It also includes troubleshooting tips and notes about AR behavior across devices.
 
 ## Quick overview
@@ -220,7 +220,7 @@ If you want me to add any of these to the repo (README improvements, debug UI, o
 
 ## Project info
 
-**URL**: 
+**URL**: https://celeb-sparkle-mirror.vercel.app/ 
 
 ## How can I edit this code?
 
